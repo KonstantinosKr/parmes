@@ -246,7 +246,6 @@ task void forces_task (uniform int span, uniform master_conpnt master[], uniform
 	con->force[2][k] = f[2];
       }
 
-#if 1
       uniform int ngone = 0;
 
       for (uniform int k = 0; k < con->size; k ++)
@@ -283,20 +282,8 @@ task void forces_task (uniform int span, uniform master_conpnt master[], uniform
       }
 
       con->size -= ngone;
-#else
-     for (uniform int k = 0; k < con->size; k ++)
-     {
-       if (gone[k])
-       {
-	 con->force[0][k] = 0;
-	 con->force[1][k] = 0;
-	 con->force[2][k] = 0;
-       }
-     }
-#endif
     }
 
-#if 0
     uniform master_conpnt * uniform con = master[i].next;
 
     while (con && con->next) /* delete empty items */
@@ -312,7 +299,6 @@ task void forces_task (uniform int span, uniform master_conpnt master[], uniform
 
       con = con->next;
     }
-#endif
 
     /* symmetrical copy into slave contact points */
     for (uniform master_conpnt * uniform con = &master[i]; con; con = con->next)

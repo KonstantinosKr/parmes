@@ -787,7 +787,6 @@ export void condet (uniform int threads, uniform partitioning tree[], uniform ma
   sync;
 
   launch [threads] test_ellipsoids (ellnum/threads, tree, ellnum, ellcol, part, center, radii, orient, master);
-  sync;
 
   launch [threads] test_triangles (trinum/threads, tree, trinum, tricol, triobs, tri, master);
 }
