@@ -246,15 +246,16 @@ task void forces_task (uniform int span, uniform master_conpnt master[], uniform
 	con->force[2][k] = f[2];
       }
 
+#if 1
       uniform int ngone = 0;
 
       for (uniform int k = 0; k < con->size; k ++)
       {
-	if (gone[k])
+	if (gone[k] != 0)
 	{
 	  uniform int j = k+1;
 
-	  while (j < con->size && gone[j]) j ++;
+	  while (j < con->size && gone[j] != 0) j ++;
 
 	  if (j < con->size)
 	  {
@@ -273,13 +274,26 @@ task void forces_task (uniform int span, uniform master_conpnt master[], uniform
 	    con->force[0][k] = con->force[0][j];
 	    con->force[1][k] = con->force[1][j];
 	    con->force[2][k] = con->force[2][j];
+
+	    gone[j] = -1; /* not to be used again */
 	  }
 
-	  ngone ++;
+	  if (gone[k] > 0) ngone ++;
 	}
       }
 
       con->size -= ngone;
+#else
+     for (uniform int k = 0; k < con->size; k ++)
+     {
+       if (gone[k])
+       {
+	 con->force[0][k] = 0;
+	 con->force[1][k] = 0;
+	 con->force[2][k] = 0;
+       }
+     }
+#endif
     }
 
 #if 0

@@ -51,14 +51,21 @@ inline static REAL ellipsoid_ellipsoid (uniform REAL p1[3], uniform REAL r1[3], 
 /* allocate new master contact point that can be written to */
 static uniform master_conpnt * uniform newcon (uniform master_conpnt * uniform master, uniform int taskindex, uniform int *k)
 {
-  while (master->lock != taskindex)
-    atomic_compare_exchange_global (&master->lock, -1, taskindex); /* lock access */
+  if (taskindex >= 0)
+  {
+    while (master->lock != taskindex)
+      atomic_compare_exchange_global (&master->lock, -1, taskindex); /* lock access */
+  }
 
   uniform master_conpnt * uniform con = master;
 
-  while (con->size == CONBUF && con->next != NULL) con = con->next; /* rewind to the end */
+  while (con->size == CONBUF && con->next != NULL) con = con->next; /* find available item or rewind to end */
 
-  if (con->size == CONBUF && con->next == NULL)
+  if (con->size < CONBUF)
+  {
+    *k = con->size ++;
+  }
+  else
   {
     uniform master_conpnt * uniform ptr = uniform new uniform master_conpnt;
     ptr->size = 0;
@@ -67,9 +74,8 @@ static uniform master_conpnt * uniform newcon (uniform master_conpnt * uniform m
     con = ptr; /* return new item */
     *k = 0;
   }
-  else *k = con->size ++;
 
-  master->lock = -1; /* unlock */
+  if (taskindex >= 0) master->lock = -1; /* unlock */
 
   return con;
 }
@@ -93,7 +99,7 @@ static void drop_ellipsoid (uniform partitioning tree[], uniform int node,
   uniform REAL lo[3], uniform REAL hi[3], uniform REAL rx,
   uniform REAL p[3], uniform REAL r[3], uniform REAL or[9],
   uniform int color, uniform int part, uniform int i,
-  uniform master_conpnt * uniform master, uniform int taskindex)
+  uniform master_conpnt master[], uniform int taskindex)
 {
   uniform int d = tree[node].dimension;
 
@@ -113,7 +119,7 @@ static void drop_ellipsoid (uniform partitioning tree[], uniform int node,
     uniform REAL normal[3][LSIZE];
     uniform REAL depth[LSIZE];
 
-    if (r[1] < 0.)
+    if (r[1] < 0.) /* sphere- */
     {
       foreach (j = 0 ... l->size)
       {
@@ -128,7 +134,7 @@ static void drop_ellipsoid (uniform partitioning tree[], uniform int node,
 	  q[1] = p[1]-c[1];
 	  q[2] = p[2]-c[2];
 	  len = LEN(q);
-	  ilen = len > 0.0 ? 1.0/len : 1.0;
+	  ilen = len > 0.0 ? 1.0/len : 1.0; /* test with self is possible */
 	  point[0][j] = 0.5*(p[0]+c[0]);
 	  point[1][j] = 0.5*(p[1]+c[1]); 
 	  point[2][j] = 0.5*(p[2]+c[2]); 
@@ -149,7 +155,7 @@ static void drop_ellipsoid (uniform partitioning tree[], uniform int node,
 	}
       }
     }
-    else
+    else /* ellipsoid- */
     {
       foreach (j = 0 ... l->size)
       {
@@ -174,42 +180,87 @@ static void drop_ellipsoid (uniform partitioning tree[], uniform int node,
 
     for (uniform int j = 0; j < l->size; j ++)
     {
-      if (depth[j] > 0.0 && part < l->part[j]) /* master contact points are indexed by smaller particle index */
+      if (depth[j] > 0.0 && part != l->part[j])
       {
         uniform int found = 0;
 
-	for (uniform master_conpnt * uniform con = master; con; con = con->next)
+	uniform int index = min(part, l->part[j]); /* master contact points are indexed by smaller particle index */
+
+	uniform master_conpnt * uniform mlist = &master[index];
+
+	while (mlist->lock != taskindex)
+	  atomic_compare_exchange_global (&mlist->lock, -1, taskindex); /* lock access */
+
+	if (part == index) /* part is master */
 	{
-	  for (uniform int k = 0; k < con->size; k ++)
+	  for (uniform master_conpnt * uniform con = mlist; con; con = con->next)
 	  {
-	    if (con->master[k] == i && con->slave[0][k] == l->part[j] && con->slave[1][k] == l->ell[j]) /* found existing contact point */
+	    for (uniform int k = 0; k < con->size; k ++)
 	    {
-	      found = 1;
-	      goto out;
+	      if (con->master[k] == i && con->slave[0][k] == l->part[j] && con->slave[1][k] == l->ell[j]) /* found existing contact point */
+	      {
+		found = 1;
+		goto out;
+	      }
 	    }
 	  }
 	}
+	else /* l->part is master */
+	{
+          for (uniform master_conpnt * uniform con = mlist; con; con = con->next)
+	  {
+	    for (uniform int k = 0; k < con->size; k ++)
+	    {
+	      if (con->master[k] == l->part[j] && con->slave[0][k] == part && con->slave[1][k] == i) /* found existing contact point */
+	      {
+		found = 1;
+		goto out;
+	      }
+	    }
+	  }
+	}
+
 out:
 	if (found == 0) /* not found above so create new contact point */
 	{
 	  uniform master_conpnt * uniform con;
 	  uniform int k;
 
-	  con = newcon (master, taskindex, &k);
+	  con = newcon (mlist, -1, &k); /* non-locking alloc */
 
-	  con->master[k] = i;
-	  con->slave[0][k] = l->part[j];
-	  con->slave[1][k] = l->ell[j];
-	  con->color[0][k] = color;
-	  con->color[1][k] = l->color[j];
-	  con->point[0][k] = point[0][j];
-	  con->point[1][k] = point[1][j];
-	  con->point[2][k] = point[2][j];
-	  con->normal[0][k] = normal[0][j];
-	  con->normal[1][k] = normal[1][j];
-	  con->normal[2][k] = normal[2][j];
-	  con->depth[k] = depth[j];
+	  if (part == index) /* part is master */
+	  {
+	    con->master[k] = i;
+	    con->slave[0][k] = l->part[j];
+	    con->slave[1][k] = l->ell[j];
+	    con->color[0][k] = color;
+	    con->color[1][k] = l->color[j];
+	    con->point[0][k] = point[0][j];
+	    con->point[1][k] = point[1][j];
+	    con->point[2][k] = point[2][j];
+	    con->normal[0][k] = normal[0][j];
+	    con->normal[1][k] = normal[1][j];
+	    con->normal[2][k] = normal[2][j];
+	    con->depth[k] = depth[j];
+	  }
+	  else /* l->part is master */
+	  {
+            con->master[k] = l->part[j];
+	    con->slave[0][k] = part;
+	    con->slave[1][k] = i;
+	    con->color[0][k] = l->color[j];
+	    con->color[1][k] = color;
+	    con->point[0][k] = point[0][j];
+	    con->point[1][k] = point[1][j];
+	    con->point[2][k] = point[2][j];
+	    con->normal[0][k] = -normal[0][j];
+	    con->normal[1][k] = -normal[1][j];
+	    con->normal[2][k] = -normal[2][j];
+	    con->depth[k] = depth[j];
+	  }
 	}
+
+	mlist->lock = -1; /* unlock */
       }
     }
   }
@@ -234,7 +285,7 @@ task void test_ellipsoids (uniform int span, uniform partitioning tree[], unifor
                           orient[3][i], orient[4][i], orient[5][i],
 			  orient[6][i], orient[7][i], orient[8][i]};
 
-    drop_ellipsoid (tree, 0, lo, hi, rx, p, r, or, ellcol[i], part[i], i, &master[part[i]], taskIndex);
+    drop_ellipsoid (tree, 0, lo, hi, rx, p, r, or, ellcol[i], part[i], i, master, taskIndex);
   }
 }
 
@@ -402,39 +453,42 @@ static void drop_triangle (uniform partitioning tree[], uniform int node, unifor
 
     for (uniform int j = 0; j < l->size; j ++)
     {
-      uniform int found = 0;
-
-      for (uniform master_conpnt * uniform con = &master[l->part[j]]; con; con = con->next)
+      if (depth[j] > 0.0)
       {
-	for (uniform int k = 0; k < con->size; k ++)
+        uniform int found = 0;
+
+	for (uniform master_conpnt * uniform con = &master[l->part[j]]; con; con = con->next)
 	{
-	  if (con->master[k] == l->ell[j] && con->slave[1][k] == -(i+1)) /* found existing contact point */
+	  for (uniform int k = 0; k < con->size; k ++)
 	  {
-	    found = 1;
-	    goto out;
+	    if (con->master[k] == l->ell[j] && con->slave[1][k] == -(i+1)) /* found existing contact point */
+	    {
+	      found = 1;
+	      goto out;
+	    }
 	  }
 	}
-      }
 out:
-      if (depth[j] > 0.0 && found == 0) /* create new contact point */
-      {
-	uniform master_conpnt * uniform con;
-	uniform int k;
+	if (found == 0) /* create new contact point */
+	{
+	  uniform master_conpnt * uniform con;
+	  uniform int k;
 
-	con = newcon (&master[l->part[j]], taskindex, &k);
+	  con = newcon (&master[l->part[j]], taskindex, &k);
 
-	con->master[k] = l->ell[j];
-	con->slave[0][k] = triobs; /* see input.cpp:OBSTACLE */
-	con->slave[1][k] = -(i+1); /* particle-triangle */ 
-	con->color[0][k] = l->color[j]; 
-	con->color[1][k] = color;
-	con->point[0][k] = point[0][j];
-	con->point[1][k] = point[1][j];
-	con->point[2][k] = point[2][j];
-	con->normal[0][k] = normal[0][j];
-	con->normal[1][k] = normal[1][j];
-	con->normal[2][k] = normal[2][j];
-	con->depth[k] = depth[j];
+	  con->master[k] = l->ell[j];
+	  con->slave[0][k] = triobs; /* see input.cpp:OBSTACLE */
+	  con->slave[1][k] = -(i+1); /* particle-triangle */ 
+	  con->color[0][k] = l->color[j]; 
+	  con->color[1][k] = color;
+	  con->point[0][k] = point[0][j];
+	  con->point[1][k] = point[1][j];
+	  con->point[2][k] = point[2][j];
+	  con->normal[0][k] = normal[0][j];
+	  con->normal[1][k] = normal[1][j];
+	  con->normal[2][k] = normal[2][j];
+	  con->depth[k] = depth[j];
+	}
       }
     }
   }
@@ -611,7 +665,7 @@ task void update_existing (uniform int span, uniform int parnum, uniform master_
 	    q[1] = p[1]-c[1];
 	    q[2] = p[2]-c[2];
 	    len = LEN(q);
-	    ilen = len > 0.0 ? 1.0/len : 1.0;
+	    ilen = 1.0/len;
 	    con->point[0][k] = 0.5*(p[0]+c[0]);
 	    con->point[1][k] = 0.5*(p[1]+c[1]); 
 	    con->point[2][k] = 0.5*(p[2]+c[2]); 
@@ -733,6 +787,7 @@ export void condet (uniform int threads, uniform partitioning tree[], uniform ma
   sync;
 
   launch [threads] test_ellipsoids (ellnum/threads, tree, ellnum, ellcol, part, center, radii, orient, master);
+  sync;
 
   launch [threads] test_triangles (trinum/threads, tree, trinum, tricol, triobs, tri, master);
 }

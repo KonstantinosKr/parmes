@@ -9,7 +9,7 @@ E = 1E6
 nu = 0.2
 
 # sphere data
-num = 15 # number of spheres along x, y, z
+num = 25 # number of spheres along x, y, z
 rad = 0.5/num
 
 # contact data
